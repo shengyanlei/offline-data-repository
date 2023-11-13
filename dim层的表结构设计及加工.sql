@@ -1,5 +1,6 @@
 -- date:2023-09-15
 -- author:@shyl
+-- 问题：增量表第二天关联时需要去重处理
 -- 问题一：为什么使用snappy压缩后，desc formatted【compress no】 和 show create table 【snappy】 展示是否压缩 不一致：
 -- 还没弄懂为什么 【可能hive 没有配置snappy算法，但是文件大小确实不一致】
 -- 写在前面：
@@ -63,7 +64,7 @@ select
 from
     shyl_ods.ods_user_info_inc
 where
-    dt = ${hivevar:etl_dt}
+    dt = ${dt}
     and type = 'bootstrap-insert';
 -- ==================================================================orc
 
@@ -88,7 +89,7 @@ create table if not exists shyl_dim.dim_user_info_orc
     partitioned by (dt string comment "分区字段yyyy-MM-dd")
     stored as orc;
 -- 未压缩 200条 8.8kb
-insert overwrite table shyl_dim.dim_user_info_orc partition (dt)
+insert overwrite table shyl_dim.dim_user_info_orc partition (dt);
 select
     `data`.id                                              as id
     , `data`.login_name                                    as login_name
@@ -108,7 +109,7 @@ select
 from
     shyl_ods.ods_user_info_inc
 where
-    dt = ${hivevar:etl_dt}
+    dt = ${dt}
     and type = 'bootstrap-insert';
 
 -- ==================================================================parquet
@@ -154,7 +155,7 @@ select
 from
     shyl_ods.ods_user_info_inc
 where
-    dt = ${hivevar:etl_dt}
+    dt = ${dt}
     and type = 'bootstrap-insert';
 -- =============================================================snappy
 drop table if exists shyl_dim.dim_user_info_snappy;
@@ -200,7 +201,7 @@ select
 from
     shyl_ods.ods_user_info_inc
 where
-    dt = ${hivevar:etl_dt}
+    dt = ${dt}
     and type = 'bootstrap-insert';
 
 -- ===========================================================gzip
@@ -247,7 +248,7 @@ select
 from
     shyl_ods.ods_user_info_inc
 where
-    dt = ${hivevar:etl_dt}
+    dt = ${dt}
     and type = 'bootstrap-insert';
 
 =============================================================lzo
@@ -257,7 +258,7 @@ select *
 from
     shyl_ods.ods_user_info_inc
 where
-    dt = ${hivevar:etl_dt}
+    dt = ${dt}
 limit 10;
 -- 数据样例
 -- bootstrap-insert
@@ -295,7 +296,7 @@ select
 from
     shyl_ods.ods_user_info_inc
 where
-    dt = ${hivevar:etl_dt}
+    dt = ${dt}
     and type = 'bootstrap-insert';
 -- :由于用户表是拉链表，所以之后每天的数据处理方式：先将insert类型的数据和昨天的union在一起 ，在匹配update数据进行修改
 -- 思考：拉链表如果更新失败，如何补数：从失败内天往后重新计算一遍
@@ -317,13 +318,13 @@ from
          , t2.operator_time
          , t1.start_time
          , nvl( t2.operator_time , '9999-12-31' ) as end_time
-         , ${hivevar:etl_dt}                      as dt
+         , ${dt}                                  as dt
      from
          (select *
           from
               dim_user_info_orc
           where
-              dt = date_sub( ${hivevar:etl_dt} , 1 )
+              dt = date_sub( ${dt} , 1 )
 
           union all
 
@@ -346,30 +347,54 @@ from
           from
               shyl_ods.ods_user_info_inc
           where
-              dt = ${hivevar:etl_dt}
+              dt = ${dt}
               and `type` = 'insert') t1
              left join
-             (select
-                  `data`.id                                              as user_id
-                  , `data`.login_name                                    as login_name
-                  , `data`.nick_name                                     as nick_name
-                  , `data`.name                                          as user_name
-                  , `data`.birthday                                      as birthday
-                  , if( `data`.gender is null , '未知' , `data`.gender ) as gender
-                  , `data`.phone_num                                     as phone
-                  , `data`.email                                         as email
-                  , `data`.user_level                                    as user_level
-                  , `data`.status                                        as status
-                  , `data`.create_time                                   as create_time
-                  , `data`.operate_time                                  as operator_time
-                  , `data`.create_time                                   as start_time
-                  , '9999-12-31'                                         as end_time
-                  , dt
-              from
-                  shyl_ods.ods_user_info_inc
-              where
-                  dt = ${hivevar:etl_dt}
-                  and `type` = 'update') t2
+             (-- 同一个人一天多次修改记录 会造成数据的重复？解决方式:取最新一条
+                 select
+                     user_id
+                     , login_name
+                     , nick_name
+                     , user_name
+                     , birthday
+                     , gender
+                     , phone
+                     , email
+                     , user_level
+                     , status
+                     , create_time
+                     , operator_time
+                     , start_time
+                     , end_time
+                     , dt
+                     , rn
+                 from
+                     (select
+                          `data`.id                                                      as user_id
+                          , `data`.login_name                                            as login_name
+                          , `data`.nick_name                                             as nick_name
+                          , `data`.name                                                  as user_name
+                          , `data`.birthday                                              as birthday
+                          , if( `data`.gender is null , '未知' , `data`.gender )         as gender
+                          , `data`.phone_num                                             as phone
+                          , `data`.email                                                 as email
+                          , `data`.user_level                                            as user_level
+                          , `data`.status                                                as status
+                          , `data`.create_time                                           as create_time
+                          , `data`.operate_time                                          as operator_time
+                          , `data`.create_time                                           as start_time
+                          , '9999-12-31'                                                 as end_time
+                          , dt
+                          , row_number( ) over (partition by `data`.id order by ts desc) as rn
+                      from
+                          shyl_ods.ods_user_info_inc
+                      where
+                          dt = ${dt}
+                          and `type` = 'update'
+                      order by
+                          cast( `data`.id as int )) a
+                 where
+                     rn = 1) t2
              on t1.user_id = t2.user_id) a
 order by
     cast( user_id as int );
@@ -471,7 +496,7 @@ from
      from
          shyl_ods.ods_sku_info_full
      where
-         dt = ${hivevar:etl_dt}) sku
+         dt = ${dt}) sku
 
         left join
 
@@ -479,7 +504,7 @@ from
          from
              shyl_ods.ods_spu_info_full
          where
-             dt = ${hivevar:etl_dt}) spu
+             dt = ${dt}) spu
         on sku.spu_id = spu.id
 
         left join
@@ -490,7 +515,7 @@ from
          from
              shyl_ods.ods_base_trademark_full
          where
-             dt = ${hivevar:etl_dt}) tm
+             dt = ${dt}) tm
         on sku.tm_id = tm.id
 
         left join
@@ -499,7 +524,7 @@ from
          from
              shyl_ods.ods_base_category3_full
          where
-             dt = ${hivevar:etl_dt}) category3
+             dt = ${dt}) category3
         on spu.category3_id = category3.id
 
         left join
@@ -508,7 +533,7 @@ from
          from
              shyl_ods.ods_base_category2_full
          where
-             dt = ${hivevar:etl_dt}) category2
+             dt = ${dt}) category2
         on category3.category2_id = category2.id
 
         left join
@@ -517,7 +542,7 @@ from
          from
              shyl_ods.ods_base_category1_full
          where
-             dt = ${hivevar:etl_dt}) category1
+             dt = ${dt}) category1
         on category2.category1_id = category1.id
 
         left join
@@ -532,7 +557,7 @@ from
          from
              shyl_ods.ods_sku_attr_value_full
          where
-             dt = ${hivevar:etl_dt}
+             dt = ${dt}
          group by
              sku_id
          order by
@@ -551,7 +576,7 @@ from
          from
              shyl_ods.ods_sku_sale_attr_value_full
          where
-             dt = ${hivevar:etl_dt}
+             dt = ${dt}
          group by
              sku_id
          order by
@@ -595,7 +620,7 @@ from
      from
          shyl_ods.ods_base_province_full
      where
-         dt = ${hivevar:etl_dt}) province
+         dt = ${dt}) province
         left join
         (select
              id
@@ -603,12 +628,13 @@ from
          from
              shyl_ods.ods_base_region_full
          where
-             dt = ${hivevar:etl_dt}) region
+             dt = ${dt}) region
         on province.region_id = region.id
 order by
     cast( province.id as int );
 
 -- 日期维度表  部分数据通过csv文件【execl文件导出csv格式，注意换行符修改为Linux下的\n】导入（日期，是否节假日，星期，说明），其它数据计算得出
+drop table if exists shyl_ods.ods_date_import_csv;
 create table if not exists shyl_ods.ods_date_import_csv
 (
     `date`     string comment '日期' ,
@@ -617,38 +643,13 @@ create table if not exists shyl_ods.ods_date_import_csv
     desc       string comment '说明'
 )
     partitioned by (`year` string comment '年份-分区字段')
---     建表时忘记指定字段分隔符为',',因为上传的文件是csv文件，后续使用语句修改
+    --     建表时忘记指定字段分隔符为',',因为上传的文件是csv文件，后续使用语句修改
 --     ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' -- 指定字段分隔符为逗号
 --     LINES TERMINATED BY '\n' -- 指定行分隔符
     stored as textfile;
---     因为csv文件携带表头 ，还需要配置跳过表头
---     TBLPROPERTIES ("skip.header.line.count"="1");
 
 msck repair table shyl_ods.ods_date_import_csv;
 show partitions shyl_ods.ods_date_import_csv;
-select * from shyl_ods.ods_date_import_csv limit 10;
-alter table shyl_ods.ods_date_import_csv set serdeproperties ('field.delim'=',');
-ALTER TABLE shyl_ods.ods_date_import_csv SET TBLPROPERTIES ("skip.header.line.count"="1");
-show create table shyl_ods.ods_date_import_csv;
-
-insert overwrite table shyl_ods.ods_date_import_csv partition (year)
-select
-    `date`,
-    weekday,
-    is_workday,
-    desc,
-    '2022' as year
-from shyl_ods.ods_date_import_csv
-limit 10;
-
-select count(*) from shyl_ods.ods_date_import_csv where year='2022';-- 10
-select * from shyl_ods.ods_date_import_csv where year='2022';-- 9行
-select count(*) from shyl_ods.ods_date_import_csv where year='2023';
--- 两个文件总行数 366 +365 =731 一个文件有表头，一个没有。
--- 结果：hive查询729
--- 删除有表头的文件后 无表头 hive查询364
-
-
 
 create table if not exists shyl_dim.dim_date_info_orc
 (
@@ -663,17 +664,18 @@ create table if not exists shyl_dim.dim_date_info_orc
     partitioned by (`year` string comment '年份-分区字段')
     stored as orc;
 
+insert overwrite table shyl_dim.dim_date_info_orc partition (year)
 select
     `date`
-    , day( `date` )       as day_id
+    , datediff( `date` , '2022-12-31' ) as day_id
     , weekday
-    , dayofweek( `date` ) as week_id
+    , dayofweek( `date` )               as week_id
     , CASE
         WHEN month( `date` ) BETWEEN 1 AND 3   THEN 'Q1'
         WHEN month( `date` ) BETWEEN 4 AND 6   THEN 'Q2'
         WHEN month( `date` ) BETWEEN 7 AND 9   THEN 'Q3'
         WHEN month( `date` ) BETWEEN 10 AND 12 THEN 'Q4'
-        END               AS quarter
+        END                             AS quarter
     , is_workday
     , desc
     , year( `date` )
@@ -681,6 +683,384 @@ from
     shyl_ods.ods_date_import_csv
 where
     `year` = 2023;
+
+-- 活动信息维度表
+drop table if exists shyl_dim.dim_activity_info_orc;
+create table if not exists shyl_dim.dim_activity_info_orc
+(
+    activity_rule_id    string comment '活动规则id' ,
+    activity_id         string comment '活动id' ,
+    activity_name       string comment '活动名称' ,
+    activity_type_code  string comment '活动类型编码' ,
+    activitye_type_name string comment '活动类型' ,
+    activity_desc       string comment '活动描述' ,
+    condition_amount    string comment '满减金额' ,
+    condition_num       string comment '满减件数' ,
+    benefit_amount      string comment '优惠金额' ,
+    benefit_discount    string comment '优惠折扣' ,
+    benefit_level       string comment '优惠等级' ,
+    benefit_rule        string comment '优惠规则' ,
+    start_time          string comment '活动开始时间' ,
+    end_time            string comment '活动结束时间' ,
+    create_time         string comment '活动创建时间'
+)
+    PARTITIONED BY (`dt` string comment '分区字段 YYYY-MM-dd')
+    STORED AS ORC;
+
+insert overwrite table shyl_dim.dim_activity_info_orc partition (dt)
+select
+    rule.activity_rule_id
+    , act.activity_id
+    , act.activity_name
+    , act.activity_type as activitye_type_code
+    , dic.dic_name      as activitye_type_name
+    , act.activity_desc
+    , rule.condition_amount
+    , rule.condition_num
+    , rule.benefit_amount
+    , rule.benefit_discount
+    , rule.benefit_level
+    , case rule.activity_type
+        when '3101' then concat( '满' , condition_amount , '元减' , benefit_amount , '元' )
+        when '3102' then concat( '满' , condition_num , '件打' , 10 * (1 - benefit_discount) , '折' )
+        when '3103' then concat( '打' , 10 * (1 - benefit_discount) , '折' )
+        end                benefit_rule
+    , act.start_time
+    , act.end_time
+    , act.create_time
+    , act.dt
+from
+    (select
+         id                                                as activity_id
+         , activity_name
+         , activity_type
+         , activity_desc
+         , start_time
+         , end_time
+         , nvl( create_time , date_sub( start_time , 1 ) ) as create_time
+         , dt
+     from
+         shyl_ods.ods_activity_info_full
+     where
+         dt = ${dt}) act
+
+        left join
+
+        (select
+             id as activity_rule_id
+             , activity_id
+             , activity_type
+             , condition_amount
+             , condition_num
+             , benefit_amount
+             , benefit_discount
+             , benefit_level
+         from
+             shyl_ods.ods_activity_rule_full
+         where
+             dt = ${dt}) rule
+        on act.activity_id = rule.activity_id
+
+        left join
+
+        (select
+             dic_code
+             , dic_name
+         from
+             shyl_ods.ods_base_dic_full
+         where
+             dt = ${dt}
+             and parent_code = '31') dic
+        on act.activity_type = dic.dic_code;
+
+-- 检验数据
+select
+    count( * )
+    , dt
+from
+    shyl_dim.dim_activity_info_orc
+group by
+    dt;
+
+select *
+from
+    dim_activity_info_orc;
+
+-- 优惠券表 dim_coupon_info_orc
+-- 1.解析ods_coupon_use_inc
+{"id":null,"coupon_id":null,"user_id":null,"order_id":null,"coupon_status":null,
+"get_time":null,"using_time":null,"used_time":null,"expire_time":null}
+
+drop table if exists shyl_dwd.dwd_coupon_use_di;
+create table if not exists shyl_dwd.dwd_coupon_use_inc
+(
+    id                 string comment '编号' ,
+    coupon_id          string comment '优惠券id' ,
+    user_id            string comment '用户id' ,
+    order_id           string comment '订单id' ,
+    coupon_status_code string comment '优惠券状态编码' ,
+    coupon_status      string comment '优惠券状态' ,
+    get_time           string comment '优惠券获取时间' ,
+    using_time         string comment '优惠券使用时间' ,
+    used_time          string comment '使用优惠券支付时间' ,
+    expire_time        string comment '优惠券过期时间'
+)
+    PARTITIONED BY (`dt` string comment '分区字段 YYYY-MM-dd')
+    STORED AS ORC;
+-- 初始第一天
+insert overwrite table shyl_dwd.dwd_coupon_use_di partition (dt)
+select
+    id
+    , coupon_id
+    , user_id
+    , order_id
+    , coupon_status as coupon_status_code
+    , dic_name      as coupon_status
+    , get_time
+    , using_time
+    , used_time
+    , expire_time
+    , t1.dt
+from
+    (select
+         `data`.id
+         , `data`.coupon_id
+         , `data`.user_id
+         , `data`.order_id
+         , `data`.coupon_status
+         , `data`.get_time
+         , `data`.using_time
+         , `data`.used_time
+         , `data`.expire_time
+         , dt
+     from
+         shyl_ods.ods_coupon_use_inc
+     where
+         `dt` = ${dt}
+         and type = 'bootstrap-insert') t1
+
+        left join
+        (select
+             dic_code
+             , dic_name
+         from
+             shyl_ods.ods_base_dic_full
+         where
+             dt = ${dt}
+             and parent_code = '14') dic
+        on t1.coupon_status = dic.dic_code;
+
+-- 之后每天更新
+insert overwrite table shyl_dwd.dwd_coupon_use_di partition (dt)
+select
+    init.id
+    , init.coupon_id
+    , init.user_id
+    , nvl( up.order_id , init.order_id )                     as order_id
+    , nvl( up.coupon_status_code , init.coupon_status_code ) as coupon_status_code
+    , nvl( up.coupon_status , init.coupon_status )           as coupon_status
+    , init.get_time
+    , nvl( up.using_time , init.using_time )                 as using_time
+    , nvl( up.used_time , init.used_time )                   as used_time
+    , nvl( up.expire_time , init.expire_time )               as expire_time
+    , ${dt}                                                  as dt
+from
+    (select *
+     from
+         shyl_dwd.dwd_coupon_use_di
+     where
+         dt = date_sub( ${dt} , 1 )
+     union
+     select
+         id
+         , coupon_id
+         , user_id
+         , order_id
+         , coupon_status as coupon_status_code
+         , dic_name      as coupon_status
+         , get_time
+         , using_time
+         , used_time
+         , expire_time
+         , t1.dt
+     from
+         (select
+              `data`.id
+              , `data`.coupon_id
+              , `data`.user_id
+              , `data`.order_id
+              , `data`.coupon_status
+              , `data`.get_time
+              , `data`.using_time
+              , `data`.used_time
+              , `data`.expire_time
+              , dt
+          from
+              shyl_ods.ods_coupon_use_inc
+          where
+              `dt` = ${dt}
+              and type = 'insert') t1
+
+             left join
+             (select
+                  dic_code
+                  , dic_name
+              from
+                  shyl_ods.ods_base_dic_full
+              where
+                  dt = ${dt}
+                  and parent_code = '14') dic
+             on t1.coupon_status = dic.dic_code) init
+
+        left join
+
+        (select
+             id
+             , coupon_id
+             , user_id
+             , order_id
+             , coupon_status as coupon_status_code
+             , dic_name      as coupon_status
+             , get_time
+             , using_time
+             , used_time
+             , expire_time
+             , t1.dt
+         from
+             (select
+                  `data`.id
+                  , `data`.coupon_id
+                  , `data`.user_id
+                  , `data`.order_id
+                  , `data`.coupon_status
+                  , `data`.get_time
+                  , `data`.using_time
+                  , `data`.used_time
+                  , `data`.expire_time
+                  , dt
+              from
+                  shyl_ods.ods_coupon_use_inc
+              where
+                  `dt` = ${dt}
+                  and type = 'update') t1
+
+                 left join
+                 (select
+                      dic_code
+                      , dic_name
+                  from
+                      shyl_ods.ods_base_dic_full
+                  where
+                      dt = ${dt}
+                      and parent_code = '14') dic
+                 on t1.coupon_status = dic.dic_code) up
+        on init.id = up.id;
+-- 查看数据
+
+drop table if exists shyl_dim.dim_coupon_info_orc;
+create table if not exists shyl_dim.dim_coupon_info_orc
+(
+    coupon_id        string comment '购物券id' ,
+    coupon_name      string comment '购物券名称' ,
+    coupon_type_code string comment '购物券类型编码' ,
+    coupon_type_name string comment '购物券类型' ,
+    condition_amount string comment '满减金额' ,
+    condition_num    string comment '满减件数' ,
+    activity_id      string comment '活动id' ,
+    benefit_amount   string comment '优惠金额' ,
+    benefit_discount string comment '优惠折扣' ,
+    benefit_rule     string comment '优惠规则' ,
+    create_time      string comment '创建时间' ,
+    range_type_code  string comment '范围类型编码' ,
+    range_type_name  string comment '范围类型：1.商品 2.品类 3.品牌' ,
+    limit_num        string comment '最多领用次数' ,
+    taken_count      string comment '已领用次数' ,
+    start_time       string comment '开始领取时间' ,
+    end_time         string comment '结束领取时间' ,
+    operate_time     string comment '修改时间' ,
+    expire_time      string comment '过期时间'
+) PARTITIONED BY (`dt` string comment '分区字段 YYYY-MM-dd')
+    STORED AS ORC;
+
+insert overwrite table shyl_dim.dim_coupon_info_orc partition (dt)
+select
+    coupon_id
+    , coupon_name
+    , coupon_type         as coupon_type_code
+    , coupon_dic.dic_name as coupon_type_name
+    , condition_amount
+    , condition_num
+    , activity_id
+    , benefit_amount
+    , benefit_discount
+    , case coupon_type
+        when '3201' then concat( '满' , condition_amount , '元减' , benefit_amount , '元' )
+        when '3202' then concat( '满' , condition_num , '件打' , 10 * (1 - benefit_discount) , '折' )
+        when '3203' then concat( '减' , benefit_amount , '元' )
+        end               as benefit_rule
+    , create_time
+    , range_type          as range_type_code
+    , range_dic.dic_name  as range_type_name
+    , limit_num
+    , taken_count
+    , start_time
+    , end_time
+    , operate_time
+    , expire_time
+    , dt
+from
+    (select
+         id as coupon_id
+         , coupon_name
+         , coupon_type
+         , condition_amount
+         , condition_num
+         , activity_id
+         , benefit_amount
+         , benefit_discount
+         , create_time
+         , range_type
+         , limit_num
+         , taken_count
+         , start_time
+         , end_time
+         , operate_time
+         , expire_time
+         , dt
+     from
+         shyl_ods.ods_coupon_info_full
+     where
+         dt = ${dt}) coupon
+
+        left join
+        (select
+             dic_code
+             , dic_name
+         from
+             shyl_ods.ods_base_dic_full
+         where
+             dt = ${dt}
+             and parent_code = '32') coupon_dic
+        on coupon.coupon_type = coupon_dic.dic_code
+        left join
+        (select
+             dic_code
+             , dic_name
+         from
+             shyl_ods.ods_base_dic_full
+         where
+             dt = ${dt}
+             and parent_code = '33') range_dic
+        on coupon.range_type = range_dic.dic_code;
+
+
+
+
+
+
+
+
+
 
 
 
