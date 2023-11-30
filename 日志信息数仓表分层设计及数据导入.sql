@@ -661,7 +661,7 @@ from
          and `start`.entry is not null) `error`
         left join shyl_ods.ods_base_province_full province
                   on error.area_code = province.area_code
-                      and province.dt = ${dt};
+                  and province.dt = ${dt};
 
 --查看分区数据量
 select
