@@ -2006,6 +2006,12 @@ where
     and return_uid is not null
     and page_id = 'login';
 
+select *
+from
+    shyl_ods.ods_applog_par
+where
+    dt = ${dt}
+    and `common`.uid = '203';
 select
     count( * )
     , dt
@@ -2275,17 +2281,35 @@ from
                        dt = ${dt}) d
                   on a.user_id = d.user_id;
 
+
 -- 复购：两个口径：一是根据订单的路径来判断 /数据不准确，现实场景中，复购的人一般也不走评价--》下单的页面   【数据缺失】
 --              二是根据今天下单的sku_id,user_id与历史订单匹配（匹配量会随时间越来越大） 不建议 【根据业务确认，限定时间范围可以接受】
+drop table if exists shyl_dws.dws_trade_sku_repurchase_di;
+create table if not exists shyl_dws.dws_trade_sku_repurchase_di
+(
+    sku_id       string comment '今日sku-id' ,
+    sku_num      int comment '今日sku数量' ,
+    order_id     string comment '今日订单id' ,
+    user_id      string comment '今日用户id' ,
+    his_order_id string comment '历史订单id' ,
+    his_sku_id   string comment '历史sku-id' ,
+    his_sku_num  int comment '历史sku数量' ,
+    his_dt       string comment '历史下单日期'
+) comment '交易域30日内复购综合统计表'
+    partitioned by (dt string comment '分区字段yyyy-MM-dd')
+    stored as orc;
+
+insert overwrite table shyl_dws.dws_trade_sku_repurchase_di partition (dt)
 select
     a.sku_id
+    , a.sku_num
     , a.order_id
     , a.user_id
-    , b.user_id
-    , b.order_id
-    , b.sku_id
+    , b.order_id as his_order_id
+    , b.sku_id   as his_sku_id
+    , b.sku_num  as his_sku_num
+    , b.dt       as his_dt
     , a.dt
-    , b.dt
 from
     (select *
      from
@@ -2294,11 +2318,727 @@ from
          dt = ${dt}) a
 
         join (select *
+              from
+                  shyl_dws.dws_trade_order_wide_di
+              where
+                  dt <= date_sub( ${dt} , 1 )
+                  and dt >= date_sub( ${dt} , 30 )) b
+             on a.sku_id = b.sku_id and a.user_id = b.user_id;
+
+-- 流量域；
+-- 访客数，曝光日志表count(distinct mid_id)
+drop table if exists shyl_dws.dws_traffic_session_wide_di;
+create table if not exists shyl_dws.dws_traffic_session_wide_di
+(
+    brand          string comment '品牌' ,
+    phone_model    string comment '手机型号' ,
+    version_code   string comment 'APP版本号' ,
+    os             string comment '操作系统' ,
+    channel        string comment '渠道' ,
+    area_code      string comment '地区编码' ,
+    area_name      string comment '地区名称' ,
+    is_new         string comment '是否首日使用' ,
+    session_id     string comment '会话id' ,
+    visitor_num    int comment '访客数' ,
+    page_num       int comment '会话内页面数-毫秒' ,
+    sesssion_time  int comment '会话停留时长' ,
+    session_num    int comment '会话数量' ,
+    home_skip_flag string comment '首页跳出标记'
+) comment '流量域会话统计宽表'
+    partitioned by (dt string comment '分区字段yyyy-MM-dd')
+    stored as orc;
+
+-- 跳出标记：这里因为是模拟数据口径直接取一个会话的page_id数量为1，且page_id=’home‘，【真实环境可能会有外部推送进入】
+insert overwrite table shyl_dws.dws_traffic_session_wide_di partition (dt)
+select
+    brand
+    , phone_model
+    , version_code
+    , os
+    , channel
+    , area_code
+    , area_name
+    , is_new
+    , a.session_id
+    , visitor_num
+    , page_num
+    , sesssion_time
+    , session_num
+    , if( b.session_id is not null , 1 , 0 ) as home_skip_flag
+    , dt
+from
+    (select
+         brand
+         , phone_model
+         , version_code
+         , os
+         , channel
+         , area_code
+         , area_name
+         , is_new
+         , session_id
+         , count( distinct mid_id )     as visitor_num
+         , count( * )                   as page_num
+         , sum( page_during_time )      as sesssion_time
+         , count( distinct session_id ) as session_num
+         , dt
+     from
+         shyl_dwd.dwd_traffic_applog_page_di
+     where
+         dt = ${dt}
+     group by
+         brand
+         , phone_model
+         , version_code
+         , os
+         , channel
+         , area_code
+         , area_name
+         , is_new
+         , session_id
+         , dt) a
+        left join (select
+                       session_id
                    from
-                       shyl_dws.dws_trade_order_wide_di
+                       (select
+                            session_id
+                            , page_id
+                            , max( rn ) over (partition by session_id) as max_rn
+                        from
+                            (select
+                                 row_number( ) over (partition by session_id order by ts) as rn
+                                 , page_id
+                                 , session_id
+                             from
+                                 shyl_dwd.dwd_traffic_applog_page_di
+                             where
+                                 dt = ${dt}) t1) t2
                    where
-                       dt < date_sub( ${dt} , 1 )) b
-                  on a.sku_id = b.sku_id and a.user_id = b.user_id
+                       max_rn = 1
+                       and page_id = 'home') b
+                  on a.session_id = b.session_id;
+
+select
+    page_id
+from
+    shyl_dwd.dwd_traffic_applog_page_di
+where
+        session_id in (
+                        'mid_119468-1692344465000' , 'mid_171751-1692344453000' , 'mid_184364-1692344477000' ,
+                        'mid_223889-1692344457000' , 'mid_228285-1692344462000' , 'mid_230447-1692344458000' ,
+                        'mid_297197-1692344454000' , 'mid_299406-1692344471000' , 'mid_330677-1692344451000' ,
+                        'mid_362088-1692344462000' , 'mid_416643-1692344452000' , 'mid_44029-1692344471000' ,
+                        'mid_444545-1692344463000' , 'mid_478261-1692344452000' , 'mid_503443-1692344480000' ,
+                        'mid_562580-1692344466000' , 'mid_597998-1692344454000' , 'mid_617015-1692344473000' ,
+                        'mid_622784-1692344458000' , 'mid_680369-1692344471000' , 'mid_691612-1692344463000' ,
+                        'mid_712152-1692344477000' , 'mid_789190-1692344459000' , 'mid_799221-1692344479000' ,
+                        'mid_852549-1692344453000' , 'mid_870406-1692344473000' , 'mid_878950-1692344469000' ,
+                        'mid_881982-1692344459000' , 'mid_885187-1692344462000' , 'mid_919131-1692344476000' ,
+                        'mid_96743-1692344481000' , 'mid_975753-1692344448000' , 'mid_996294-1692344451000'
+        );
+
+-- 用户域
+-- 活跃用户:登录用户依赖user_id判断,未登录用户依赖设备id判断
+drop table if exists shyl_dws.dws_user_retention_wide_di;
+create table if not exists shyl_dws.dws_user_retention_wide_di
+(
+    user_id      string comment '用户id' ,
+    login_time   string comment '登录时间' ,
+    mid_id       string comment '设备id' ,
+    brand        string comment '品牌' ,
+    phone_model  string comment '手机型号' ,
+    version_code string comment 'app版本' ,
+    os           string comment '操作系统' ,
+    channel      string comment '渠道' ,
+    area_code    string comment '地区编码' ,
+    area_name    string comment '地区名称' ,
+    his_dt       string comment '统计日期' ,
+    date_diff    string comment '几日留存'
+) comment '用户域留存统计宽表(30日)'
+    partitioned by (dt string comment '分区字段yyyy-MM-dd')
+    stored as orc;
+
+insert overwrite table shyl_dws.dws_user_retention_wide_di partition (dt)
+select
+    a.user_id
+    , a.login_time
+    , a.mid_id
+    , a.brand
+    , a.phone_model
+    , a.version_code
+    , a.os
+    , a.channel
+    , a.area_code
+    , a.area_name
+    , b.dt                    as his_dt
+    , datediff( a.dt , b.dt ) as date_diff
+    , a.dt
+from
+    (select *
+     from
+         shyl_dwd.dwd_user_login_di
+     where
+         dt = ${dt}) a
+        join(select *
+             from
+                 shyl_dwd.dwd_user_register_di
+             where
+                 dt <= date_sub( ${dt} , 1 )) b
+            on a.user_id = b.user_id;
+-- 留存
+select
+    his_dt
+    , register_num
+    , date_diff
+    , retention_num
+from
+    (select
+         his_dt
+         , date_diff
+         , count( * ) as retention_num
+     from
+         shyl_dws.dws_user_retention_wide_di
+     group by
+         his_dt, date_diff) a
+        left join(select
+                      dt
+                      , count( * ) as register_num
+                  from
+                      dwd_user_register_di
+                  group by
+                      dt) b
+                 on a.his_dt = b.dt;
+
+-- 连续登录
+drop table if exists shyl_dws.dws_user_continuous_login_df;
+create table if not exists shyl_dws.dws_user_continuous_login_df
+(
+    user_id               string comment '用户id' ,
+    first_login_time      string comment '用户首次登陆时间' ,
+    start_login_date      string comment '连续登陆开始日期' ,
+    last_login_date       string comment '最近登陆结束日期' ,
+    continuous_login_days int comment '连续登陆天数'
+) comment '用户域连续登陆统计表'
+    partitioned by (dt string comment '分区字段yyyy-MM-dd')
+    stored as orc;
+
+insert overwrite table shyl_dws.dws_user_continuous_login_df partition (dt)
+select
+    user_id
+    , first_login_time
+    , start_login_date
+    , date_add( start_login_date , cast( count( 1 ) as int ) - 1 ) as last_login_date
+    , count( 1 )                                                   as continuous_login_days
+    , ${dt}                                                        as dt
+from
+    (select
+         user_id
+         , login_time
+         , first_login_time
+         , max( flag ) over (partition by user_id order by login_time) as start_login_date
+     from
+         (select
+              user_id
+              , login_time
+              , first_login_time
+              , case when unix_timestamp( first_login_time ) - unix_timestamp( login_time ) = 0
+                                                                                                 then substr( a.last_login_time , 1 , 10 )
+                     when datediff( login_time , a.last_login_time ) = 0 and
+                          unix_timestamp( first_login_time ) - unix_timestamp( login_time ) != 0 then '9999-12-31'
+                     when datediff( login_time , a.last_login_time ) = 1                         then '0'
+                     else substr( a.login_time , 1 , 10 ) end as flag
+          from
+              (select
+                   login_time
+                   , user_id
+                   , min( login_time ) over (partition by user_id) as first_login_time
+--     , if (row_number() over(partition by user_id order by login_time) =1,'0000-00-00',min( login_time ) over (partition by user_id order by login_time rows between 1 preceding and current row)) as last_login_time
+                   , nvl( lag( login_time ) over (partition by user_id order by login_time) ,
+                          substr( login_time , 1 , 10 ) )          as last_login_time
+               from
+                   shyl_dwd.dwd_user_login_di
+               where
+                   dt <= ${dt}) a) b
+     where
+         flag <> '9999-12-31') c
+group by
+    user_id
+    , first_login_time
+    , start_login_date;
+
+
+-- 日活
+drop table if exists shyl_dws.dws_user_dau_1d;
+create table if not exists shyl_dws.dws_user_dau_1d
+(
+    user_id      STRING COMMENT '用户id' ,
+    brand        STRING COMMENT '品牌' ,
+    phone_model  STRING COMMENT '手机型号' ,
+    version_code string comment 'app版本' ,
+    os           STRING COMMENT '操作系统' ,
+    channel      STRING COMMENT '渠道' ,
+    area_code    STRING COMMENT '地区编码' ,
+    area_name    STRING COMMENT '地区名称'
+) comment '用户域dau统计表'
+    partitioned by (dt string comment '分区字段yyyy-MM-dd')
+    stored as orc;
+
+
+insert overwrite table shyl_dws.dws_user_dau_1d partition (dt)
+select
+    user_id
+    , brand
+    , phone_model
+    , version_code
+    , os
+    , channel
+    , area_code
+    , area_name
+    , ${dt}
+from
+    (select
+         user_id
+         , brand
+         , phone_model
+         , version_code
+         , os
+         , channel
+         , area_code
+         , area_name
+         , row_number( ) over (partition by user_id,brand,phone_model,version_code,os,channel,area_code,area_name) as rn
+     from
+         shyl_dwd.dwd_user_login_di
+     where
+         dt = ${dt}) a
+where
+    rn = 1;
+-- 3日
+drop table if exists shyl_dws.dws_user_dau_3d;
+create table if not exists shyl_dws.dws_user_dau_3d
+(
+    user_id      STRING COMMENT '用户id' ,
+    brand        STRING COMMENT '品牌' ,
+    phone_model  STRING COMMENT '手机型号' ,
+    version_code string comment 'app版本' ,
+    os           STRING COMMENT '操作系统' ,
+    channel      STRING COMMENT '渠道' ,
+    area_code    STRING COMMENT '地区编码' ,
+    area_name    STRING COMMENT '地区名称'
+) comment '用户域3日dau统计表'
+    partitioned by (dt string comment '分区字段yyyy-MM-dd')
+    stored as orc;
+
+insert overwrite table shyl_dws.dws_user_dau_3d partition (dt)
+select
+    user_id
+    , brand
+    , phone_model
+    , version_code
+    , os
+    , channel
+    , area_code
+    , area_name
+    , ${dt}
+from
+    (select
+         user_id
+         , brand
+         , phone_model
+         , version_code
+         , os
+         , channel
+         , area_code
+         , area_name
+         , row_number( ) over (partition by user_id,brand,phone_model,version_code,os,channel,area_code,area_name) as rn
+     from
+         shyl_dwd.dwd_user_login_di
+     where
+         dt <= ${dt}
+         and dt >= date_sub( ${dt} , 2 )) a
+where
+    rn = 1;
+
+-- 1周
+drop table if exists shyl_dws.dws_user_dau_1w;
+create table if not exists shyl_dws.dws_user_dau_1w
+(
+    user_id      STRING COMMENT '用户id' ,
+    brand        STRING COMMENT '品牌' ,
+    phone_model  STRING COMMENT '手机型号' ,
+    version_code string comment 'app版本' ,
+    os           STRING COMMENT '操作系统' ,
+    channel      STRING COMMENT '渠道' ,
+    area_code    STRING COMMENT '地区编码' ,
+    area_name    STRING COMMENT '地区名称'
+) comment '用户域1周dau统计表'
+    partitioned by (dt string comment '分区字段yyyy-MM-dd')
+    stored as orc;
+
+insert overwrite table shyl_dws.dws_user_dau_1w partition (dt)
+select
+    user_id
+    , brand
+    , phone_model
+    , version_code
+    , os
+    , channel
+    , area_code
+    , area_name
+    , ${dt}
+from
+    (select
+         user_id
+         , brand
+         , phone_model
+         , version_code
+         , os
+         , channel
+         , area_code
+         , area_name
+         , row_number( ) over (partition by user_id,brand,phone_model,version_code,os,channel,area_code,area_name) as rn
+     from
+         shyl_dwd.dwd_user_login_di
+     where
+         dt <= ${dt}
+         and dt >= date_sub( ${dt} , 6 )) a
+where
+    rn = 1;
+
+select
+    '1d'
+    , dt
+    , count( * )
+from
+    shyl_dws.dws_user_dau_1d
+group by
+    dt
+union
+select
+    '3d'
+    , dt
+    , count( * )
+from
+    shyl_dws.dws_user_dau_3d
+group by
+    dt
+union all
+select
+    '1w'
+    , dt
+    , count( * )
+from
+    shyl_dws.dws_user_dau_1w
+group by
+    dt;
+
+-- 漏斗分析
+-- 首页浏览人数/次数
+-- 商品详情页浏览人数/次数
+-- 加购人数/次数
+-- 下单人数/次数
+-- 支付成功人数/次数
+
+-- 口径，只从页面表即可判断，【根据跳转的页面即可判断是否成功，真实情况可能会存在多个页面来回跳转】
+
+drop table if exists shyl_dws.dws_traffic_user_path_wide_di;
+create table if not exists shyl_dws.dws_traffic_user_path_wide_di
+(
+    user_id          string comment '用户id' ,
+    session_id       string comment '会话id' ,
+    brand            string comment '品牌' ,
+    phone_model      string comment '手机型号' ,
+    version_code     string comment 'app版本号' ,
+    os               string comment '操作系统' ,
+    channel          string comment '渠道' ,
+    area_code        string comment '地区编码' ,
+    area_name        string comment '地区名称' ,
+    page_id          string comment '页面id' ,
+    step             string comment '步骤' ,
+    page_during_time string comment '页面时长' ,
+    page_time        string comment '页面时间'
+) comment '交易域用户域路径统计表'
+    partitioned by (dt string comment '分区字段yyyy-MM-dd')
+    stored as orc;
+
+insert overwrite table shyl_dws.dws_traffic_user_path_wide_di partition (dt)
+select
+    uid                    as use_id
+    , session_id
+    , brand
+    , phone_model
+    , version_code
+    , os
+    , channel
+    , area_code
+    , area_name
+    , page_id
+    , concat_ws( '-' , 'step' , cast( row_number( ) over (partition by session_id order by page_time) as string ) ,
+                 page_id ) as step
+    , page_during_time
+    , page_time
+    , dt
+from
+    shyl_dwd.dwd_traffic_applog_page_di
+where
+    dt = ${dt};
+
+
+/**
+  ads层设计
+ */
+create database shyl_ads;
+
+-- 真实情况，用户可能会在多个页面来回跳转，可以根据page_type来分析
+drop table if exists shyl_ads.ads_traffic_path_1d;
+create table if not exists shyl_ads.ads_traffic_path_1d
+(
+    user_cnt     int    comment '用户数量' ,
+    session_cnt  int    comment '会话数量' ,
+    version_code string comment 'app版本' ,
+    source       string comment '页面起始id' ,
+    target       string comment '页面跳转id'
+) comment '交易域用户域路径结果表'
+    partitioned by (dt string comment '分区字段yyyy-MM-dd')
+    stored as orc;
+
+insert overwrite table shyl_ads.ads_traffic_path_1d partition (dt)
+select
+    count( distinct user_id )                                      as user_cnt
+    , count( distinct session_id )                                 as session_cnt
+    , if( `grouping`( version_code ) = 1 , 'NULL' , version_code ) as version_code
+    , source
+    , target
+    , dt
+from
+    (select
+         user_id
+         , session_id
+         , version_code
+         , page_id
+         , step                                                                                   as source
+         , nvl( lead( step ) over (partition by user_id,session_id order by page_time) , 'EXIT' ) as target
+         , dt
+     from
+         shyl_dws.dws_traffic_user_path_wide_di
+     where
+         dt = ${dt}) a
+group by
+    version_code
+    , source
+    , target
+    , dt
+    grouping sets (
+    (
+    source, target, dt), (
+    version_code, source, target, dt)
+    );
+
+-- DAU
+create table shyl_ads.ads_user_dau_1d
+(
+    cnt int comment '用户数量' ,
+    dt  date comment '时间'
+) comment '用户域DAU结果表'
+    stored as orc;
+
+insert overwrite table shyl_ads.ads_user_dau_1d
+select
+    count( distinct user_id )
+    , dt
+from
+    shyl_dws.dws_user_dau_1d
+group by
+    dt;
+
+-- 漏斗分析
+
+drop table if exists shyl_ads.ads_traffic_funnel_plot;
+create table if not exists shyl_ads.ads_traffic_funnel_plot
+(
+    dt          string comment '日期' ,
+    page_id     string comment '页面id' ,
+    session_num int    comment '会话次数'
+) comment '流量域漏斗图每日结果表'
+    stored as orc;
+
+insert overwrite table shyl_ads.ads_traffic_funnel_plot
+select
+    if( `grouping`( dt ) = 1 , "9999-12-31" , dt ) as dt
+    , page_id
+    , count( distinct session_id )
+from
+    shyl_dws.dws_traffic_user_path_wide_di
+where
+    page_id in ( 'home' , 'good_detail' , 'login' , 'cart' , 'payment' ) //选择感兴趣的页面
+group by
+    dt, page_id
+    grouping sets (
+    (
+    page_id), (
+    dt, page_id)
+    );
+
+-- 连续登陆
+create table shyl_ads.ads_user_continuous_login
+(
+    start_login_date      date comment '开始登陆日期' ,
+    continuous_login_days int comment '连续登陆天数' ,
+    cnt                   int comment '人数' ,
+    dt                    date comment '统计天数'
+) comment '用户域连续登陆统计结果表'
+    stored as orc;
+
+insert overwrite table shyl_ads.ads_user_continuous_login
+select
+    start_login_date
+    , continuous_login_days
+    , count( distinct user_id )
+    , ${dt}
+from
+    shyl_dws.dws_user_continuous_login_df
+where
+    dt = ${dt}
+    and date_add( start_login_date , continuous_login_days - 1 ) = ${dt}
+group by
+    start_login_date
+    , continuous_login_days;
+
+-- 下单统计
+
+drop table shyl_ads.ads_trade_order;
+create table shyl_ads.ads_trade_order
+(
+    dt             date   comment '统计日期' ,
+    order_num      int    comment '下单数量' ,
+    order_cnt      int    comment '下单人数' ,
+    gender         string comment '性别' ,
+    age            int    comment '年龄' ,
+    province_id    string comment '省份id' ,
+    province_name  string comment '省份名称' ,
+    category1_id   string comment '一级品类id' ,
+    category1_name string comment '一级品类名称' ,
+    category2_id   string comment '二级品类id' ,
+    category2_name string comment '二级品类名称' ,
+    category3_id   string comment '三级品类id' ,
+    category3_name string comment '三级品类名称'
+) comment '交易域下单维度统计结果表'
+    stored as orc;
+
+insert overwrite table shyl_ads.ads_trade_order
+select
+    dt
+    , count( distinct order_id )                                      as order_num
+    , count( distinct user_id )                                       as order_cnt
+    , if( `grouping`( gender ) = 1 , 'ALL' , gender )                 as gender
+    , if( `grouping`( age ) = 1 , 'ALL' , age )                       as age
+    , if( `grouping`( province_id ) = 1 , 'ALL' , province_id )       as province_id
+    , if( `grouping`( province_name ) = 1 , 'ALL' , province_name )   as province_name
+    , if( `grouping`( category1_id ) = 1 , 'ALL' , category1_id )     as category1_id
+    , if( `grouping`( category1_name ) = 1 , 'ALL' , category1_name ) as category1_name
+    , if( `grouping`( category2_id ) = 1 , 'ALL' , category2_id )     as category2_id
+    , if( `grouping`( category2_name ) = 1 , 'ALL' , category2_name ) as category2_name
+    , if( `grouping`( category3_id ) = 1 , 'ALL' , category3_id )     as category3_id
+    , if( `grouping`( category3_name ) = 1 , 'ALL' , category3_name ) as category3_name
+from
+    shyl_dws.dws_trade_order_wide_di
+-- where
+--     dt = ${dt}
+group by
+    dt
+    , gender
+    , age
+    , province_id
+    , province_name
+    , category1_id
+    , category1_name
+    , category2_id
+    , category2_name
+    , category3_id
+    , category3_name
+    grouping sets (
+    (
+    dt), (
+    dt, gender)
+    , (
+    dt, age)
+    , (
+    dt, province_id, province_name)
+    , (
+    dt, category1_id, category1_name)
+    , (
+    dt, category2_id, category2_name), (
+    dt, category3_id, category3_name)
+    , (
+    dt, gender, age, province_id, province_name, category1_id, category1_name, category2_id, category2_name
+    , category3_id, category3_name)
+    );
+
+-- 流量统计
+create table if not exists shyl_ads.ads_traffic_session
+(
+    brand         string comment '品牌' ,
+    phone_model   string comment '手机型号' ,
+    version_code  string comment 'app版本' ,
+    os            string comment '操作系统' ,
+    channel       string comment '渠道' ,
+    area_code     string comment '地区编码' ,
+    area_name     string comment '地区名称' ,
+    visitor_num   int    comment 'uv' ,
+    page_num      int    comment '页面数' ,
+    session_time  int    comment '会话时长' ,
+    session_num   int    comment '会话数量' ,
+    home_skip_num int    comment '首页跳出数量' ,
+    dt            date comment '日期'
+) comment '流量域会话统计结果表'
+    stored as orc;
+insert overwrite table shyl_ads.ads_traffic_session
+select
+    if( `grouping`( brand ) = 1 , 'ALL' , brand )                 as brand
+    , if( `grouping`( phone_model ) = 1 , 'ALL' , phone_model )   as phone_model
+    , if( `grouping`( version_code ) = 1 , 'ALL' , version_code ) as version_code
+    , if( `grouping`( os ) = 1 , 'ALL' , os )                     as os
+    , if( `grouping`( channel ) = 1 , 'ALL' , channel )           as channel
+    , if( `grouping`( area_code ) = 1 , 'ALL' , area_code )       as area_code
+    , if( `grouping`( area_name ) = 1 , 'ALL' , area_name )       as area_name
+    , sum( visitor_num )                                          as visitor_num
+    , sum( page_num )                                             as page_num
+    , sum( sesssion_time )                                        as session_time
+    , sum( session_num )                                          as session_num
+    , sum( if( home_skip_flag = 1 , visitor_num , 0 ) )           as home_skip_num
+    , dt
+from
+    shyl_dws.dws_traffic_session_wide_di
+-- where
+--     dt = ${dt}
+group by
+    dt, brand, phone_model, version_code, os, channel, area_code, area_name grouping sets (
+    (
+    dt)
+    , (
+    dt, brand)
+    , (
+    dt, phone_model)
+    , (
+    dt, version_code)
+    , (
+    dt, os)
+    , (
+    dt, channel)
+    , (
+    dt, area_code, area_name)
+    );
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
