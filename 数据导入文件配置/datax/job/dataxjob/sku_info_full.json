@@ -1,0 +1,91 @@
+{
+  "job": {
+    "content": [
+      {
+        "reader": {
+          "name": "mysqlreader",
+          "parameter": {
+            "column": [
+              "*"
+            ],
+            "splitPK": "id",
+            "connection": [
+              {
+                "jdbcUrl": [
+                  "jdbc:mysql://localhost:3306/gmall"
+                ],
+                "table": [
+                  "sku_info"
+                ]
+              }
+            ],
+            "password": "1234kxmall!@#ABC",
+            "username": "root"
+          }
+        },
+        "writer": {
+          "name": "hdfswriter",
+          "parameter": {
+            "column": [
+              {
+                "name": "id",
+                "type": "bigint"
+              },
+              {
+                "name": "spu_id",
+                "type": "bigint"
+              },
+              {
+                "name": "price",
+                "type": "string"
+              },
+              {
+                "name": "sku_name",
+                "type": "string"
+              },
+              {
+                "name": "sku_desc",
+                "type": "string"
+              },
+              {
+                "name": "weight",
+                "type": "string"
+              },
+              {
+                "name": "tm_id",
+                "type": "bigint"
+              },
+              {
+                "name": "category3_id",
+                "type": "bigint"
+              },
+              {
+                "name": "sku_default_img",
+                "type": "string"
+              },
+              {
+                "name": "is_sale",
+                "type": "string"
+              },
+              {
+                "name": "create_time",
+                "type": "string"
+              }
+            ],
+            "defaultFS": "hdfs://nodev2001:8020",
+            "fieldDelimiter": "\t",
+            "fileName": "db",
+            "fileType": "orc",
+            "path": "/origin_data/gmall/db/sku_info_full/dt=2023-09-13",
+            "writeMode": "append"
+          }
+        }
+      }
+    ],
+    "setting": {
+      "speed": {
+        "channel": "1"
+      }
+    }
+  }
+}

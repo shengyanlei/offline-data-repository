@@ -1,0 +1,59 @@
+{
+  "job": {
+    "content": [
+      {
+        "reader": {
+          "name": "mysqlreader",
+          "parameter": {
+            "column": [
+              "*"
+            ],
+            "splitPK": "id",
+            "connection": [
+              {
+                "jdbcUrl": [
+                  "jdbc:mysql://localhost:3306/gmall"
+                ],
+                "table": [
+                  "base_category3"
+                ]
+              }
+            ],
+            "password": "1234kxmall!@#ABC",
+            "username": "root"
+          }
+        },
+        "writer": {
+          "name": "hdfswriter",
+          "parameter": {
+            "column": [
+              {
+                "name": "id",
+                "type": "bigint"
+              },
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "category2_id",
+                "type": "bigint"
+              }
+            ],
+            "defaultFS": "hdfs://nodev2001:8020",
+            "fieldDelimiter": "\t",
+            "fileName": "db",
+            "fileType": "orc",
+            "path": "/origin_data/gmall/db/base_category3_full/dt=2023-09-13",
+            "writeMode": "append"
+          }
+        }
+      }
+    ],
+    "setting": {
+      "speed": {
+        "channel": "1"
+      }
+    }
+  }
+}

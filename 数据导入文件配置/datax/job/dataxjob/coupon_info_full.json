@@ -1,0 +1,115 @@
+{
+  "job": {
+    "content": [
+      {
+        "reader": {
+          "name": "mysqlreader",
+          "parameter": {
+            "column": [
+              "*"
+            ],
+            "splitPK": "id",
+            "connection": [
+              {
+                "jdbcUrl": [
+                  "jdbc:mysql://localhost:3306/gmall"
+                ],
+                "table": [
+                  "coupon_info"
+                ]
+              }
+            ],
+            "password": "1234kxmall!@#ABC",
+            "username": "root"
+          }
+        },
+        "writer": {
+          "name": "hdfswriter",
+          "parameter": {
+            "column": [
+              {
+                "name": "id",
+                "type": "bigint"
+              },
+              {
+                "name": "coupon_name",
+                "type": "string"
+              },
+              {
+                "name": "coupon_type",
+                "type": "string"
+              },
+              {
+                "name": "condition_amount",
+                "type": "string"
+              },
+              {
+                "name": "condition_num",
+                "type": "bigint"
+              },
+              {
+                "name": "activity_id",
+                "type": "bigint"
+              },
+              {
+                "name": "benefit_amount",
+                "type": "string"
+              },
+              {
+                "name": "benefit_discount",
+                "type": "string"
+              },
+              {
+                "name": "create_time",
+                "type": "string"
+              },
+              {
+                "name": "range_type",
+                "type": "string"
+              },
+              {
+                "name": "limit_num",
+                "type": "int"
+              },
+              {
+                "name": "taken_count",
+                "type": "int"
+              },
+              {
+                "name": "start_time",
+                "type": "string"
+              },
+              {
+                "name": "end_time",
+                "type": "string"
+              },
+              {
+                "name": "operate_time",
+                "type": "string"
+              },
+              {
+                "name": "expire_time",
+                "type": "string"
+              },
+              {
+                "name": "range_desc",
+                "type": "string"
+              }
+            ],
+            "defaultFS": "hdfs://nodev2001:8020",
+            "fieldDelimiter": "\t",
+            "fileName": "db",
+            "fileType": "orc",
+            "path": "/origin_data/gmall/db/coupon_info_full/dt=2023-09-13",
+            "writeMode": "append"
+          }
+        }
+      }
+    ],
+    "setting": {
+      "speed": {
+        "channel": "1"
+      }
+    }
+  }
+}
